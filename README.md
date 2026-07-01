@@ -1,247 +1,65 @@
-# deej
+# deej-winapp
 
-deej is an **open-source hardware volume mixer** for Windows and Linux PCs. It lets you use real-life sliders (like a DJ!) to **seamlessly control the volumes of different apps** (such as your music player, the game you're playing and your voice chat session) without having to stop what you're doing.
+**deej** is an open-source hardware volume mixer for Windows — physical sliders connected to an Arduino control your PC app volumes in real time.
 
-**Join the [deej Discord server](https://discord.gg/nf88NJu) if you need help or have any questions!**
+This is a **fork** of [omriharel/deej](https://github.com/omriharel/deej), focused on fixing the Windows desktop client's stability issues.
 
-[![Discord](https://img.shields.io/discord/702940502038937667?logo=discord)](https://discord.gg/nf88NJu)
+## What's Different
 
-> **_New:_** [work-in-progress deej FAQ](./docs/faq/faq.md)!
+The original Go desktop app has a recurring problem: after running for a while, the sliders stop responding while the tray icon still shows the app as running. On top of that, leftover `deej.exe` processes can pile up in the background and lock the COM port.
 
-deej consists of a [lightweight desktop client](#features) written in Go, and an Arduino-based hardware setup that's simple and cheap to build. [**Check out some versions built by members of our community!**](./community.md)
+| Fix | File | What it does |
+|---|---|---|
+| **Auto-reconnect on disconnect** | `pkg/deej/serial.go` | When the serial connection drops (USB unplug, Arduino reset, COM port glitch), the app now automatically reconnects with exponential backoff (1s → 15s). No more silent death. |
+| **Connection health monitor** | `pkg/deej/serial.go` | If no serial data arrives for 5+ seconds, the connection is proactively closed and rebuilt. |
+| **Single-instance lock** | `pkg/deej/cmd/single_instance_windows.go` | Windows named mutex prevents multiple `deej.exe` instances from running simultaneously. Second instance exits immediately. |
+| **Serial format tolerance** | `pkg/deej/serial.go` | Accepts both `CRLF` and `LF`-terminated lines (original only accepted CRLF). |
+| **8-slider Arduino sketch** | `arduino/deej-8-sliders/` | 8-channel variant with 50ms loop interval (vs original 10ms) for better Windows USB-Serial stability. |
+| **Build scripts** | `scripts/` | PowerShell and batch scripts for easy Windows compilation. |
 
-**[Download the latest release](https://github.com/omriharel/deej/releases/latest) | [Video demonstration](https://youtu.be/VoByJ4USMr8) | [Build video by Tech Always](https://youtu.be/x2yXbFiiAeI)**
+## Build from Source
 
-![deej](assets/build-3d-annotated.png)
+**Prerequisites:**
+- [Go](https://go.dev/dl/) 1.14+
+- [mingw-w64](http://mingw-w64.org/) (CGo requirement for systray)
+- Git
 
-> _**Psst!** [No 3D printer? No problem!](./assets/build-shoebox.jpg)_ You can build deej on some cardboard, a shoebox or even a breadboard :)
+```powershell
+git clone https://github.com/yueyaojade/deej-winapp.git
+cd deej-winapp
+scripts\build_windows.ps1
+```
 
-## Table of contents
+Output: `deej.exe` — place alongside `config.yaml` from this repo.
 
-- [Features](#features)
-- [How it works](#how-it-works)
-  - [Hardware](#hardware)
-    - [Schematic](#schematic)
-  - [Software](#software)
-- [Slider mapping (configuration)](#slider-mapping-configuration)
-- [Build your own!](#build-your-own)
-  - [FAQ](#faq)
-  - [Build video](#build-video)
-  - [Bill of Materials](#bill-of-materials)
-  - [Thingiverse collection](#thingiverse-collection)
-  - [Build procedure](#build-procedure)
-- [How to run](#how-to-run)
-  - [Requirements](#requirements)
-  - [Download and installation](#download-and-installation)
-  - [Building from source](#building-from-source)
-- [Community](#community)
-- [License](#license)
+## Arduino Firmware
 
-## Features
+Flash `arduino/deej-8-sliders/deej-8-sliders.ino` to your Arduino Nano (or adjust pins for your board). The 5-slider original is also available at `arduino/deej-5-sliders-vanilla/`.
 
-deej is written in Go and [distributed](https://github.com/omriharel/deej/releases/latest) as a portable (no installer needed) executable.
+### Schematic
 
-- Bind apps to different sliders
-  - Bind multiple apps per slider (i.e. one slider for all your games)
-  - Bind the master channel
-  - Bind "system sounds" (on Windows)
-  - Bind specific audio devices by name (on Windows)
-  - Bind currently active app (on Windows)
-  - Bind all other unassigned apps
-- Control your microphone's input level
-- Lightweight desktop client, consuming around 10MB of memory
-- Runs from your system tray
-- Helpful notifications to let you know if something isn't working
+A standard deej wiring setup — see the [original project](https://github.com/omriharel/deej) for detailed hardware instructions.
 
-> **Looking for the older Python version?** It's no longer maintained, but you can always find it in the [`legacy-python` branch](https://github.com/omriharel/deej/tree/legacy-python).
+## Configuration
 
-## How it works
-
-### Hardware
-
-- The sliders are connected to 5 (or as many as you like) analog pins on an Arduino Nano/Uno board. They're powered from the board's 5V output (see schematic)
-- The board connects via a USB cable to the PC
-
-#### Schematic
-
-![Hardware schematic](assets/schematic.png)
-
-### Software
-
-- The code running on the Arduino board is a [C program](./arduino/deej-5-sliders-vanilla/deej-5-sliders-vanilla.ino) constantly writing current slider values over its serial interface
-- The PC runs a lightweight [Go client](./pkg/deej/cmd/main.go) in the background. This client reads the serial stream and adjusts app volumes according to the given configuration file
-
-## Slider mapping (configuration)
-
-deej uses a simple YAML-formatted configuration file named [`config.yaml`](./config.yaml), placed alongside the deej executable.
-
-The config file determines which applications (and devices) are mapped to which sliders, and which parameters to use for the connection to the Arduino board, as well as other user preferences.
-
-**This file auto-reloads when its contents are changed, so you can change application mappings on-the-fly without restarting deej.**
-
-It looks like this:
+Place `config.yaml` next to `deej.exe`. Example for 8 sliders:
 
 ```yaml
 slider_mapping:
   0: master
   1: chrome.exe
   2: spotify.exe
-  3:
-    - pathofexile_x64.exe
-    - rocketleague.exe
-  4: discord.exe
+  3: discord.exe
+  4: deej.unmapped
+  5: deej.current
+  6: obs64.exe
+  7: mic
 
-# set this to true if you want the controls inverted (i.e. top is 0%, bottom is 100%)
-invert_sliders: false
-
-# settings for connecting to the arduino board
 com_port: COM4
 baud_rate: 9600
-
-# adjust the amount of signal noise reduction depending on your hardware quality
-# supported values are "low" (excellent hardware), "default" (regular hardware) or "high" (bad, noisy hardware)
 noise_reduction: default
 ```
 
-- `master` is a special option to control the master volume of the system _(uses the default playback device)_
-- `mic` is a special option to control your microphone's input level _(uses the default recording device)_
-- `deej.unmapped` is a special option to control all apps that aren't bound to any slider ("everything else")
-- On Windows, `deej.current` is a special option to control whichever app is currently in focus
-- On Windows, you can specify a device's full name, i.e. `Speakers (Realtek High Definition Audio)`, to bind that device's level to a slider. This doesn't conflict with the default `master` and `mic` options, and works for both input and output devices.
-  - Be sure to use the full device name, as seen in the menu that comes up when left-clicking the speaker icon in the tray menu
-- `system` is a special option on Windows to control the "System sounds" volume in the Windows mixer
-- All names are case-**in**sensitive, meaning both `chrome.exe` and `CHROME.exe` will work
-- You can create groups of process names (using a list) to either:
-    - control more than one app with a single slider
-    - choose whichever process in the group that's currently running (i.e. to have one slider control any game you're playing)
-
-## Build your own!
-
-Building deej is very simple. You only need a few relatively cheap parts - it's an excellent starter project (and my first Arduino project, personally). Remember that if you need any help or have a question that's not answered here, you can always [join the deej Discord server](https://discord.gg/nf88NJu).
-
-Build deej for yourself, or as an awesome gift for your gaming buddies!
-
-### FAQ
-
-I've started a highly focused effort of writing a proper FAQ page for deej, covering many basic and advanced topics.
-
-It is still _very much a work-in-progress_, but I'm happy to [share it in its current state](./docs/faq/faq.md) in hopes that it at least covers some questions you might have.
-
-FAQ feedback in our [community Discord](https://discord.gg/nf88NJu) is strongly encouraged :)
-
-### Build video
-
-In case you prefer watching to reading, Charles from the [**Tech Always**](https://www.youtube.com/c/TechAlways) YouTube channel has made [**a fantastic video**](https://youtu.be/x2yXbFiiAeI) that covers the basics of building deej for yourself, including parts, costs, assembly and software. I highly recommend checking it out!
-
-### Bill of Materials
-
-- An Arduino Nano, Pro Micro or Uno board
-  - I officially recommend using a Nano or a Pro Micro for their smaller form-factor, friendlier USB connectors and more analog pins. Plus they're cheaper
-  - You can also use any other development board that has a Serial over USB interface
-- A few slider potentiometers, up to your number of free analog pins (the cheaper ones cost around 1-2 USD each, and come with a standard 10K Ohm variable resistor. These _should_ work just fine for this project)
-  - **Important:** make sure to get **linear** sliders, not logarithmic ones! Check the product description
-  - You can also use circular knobs if you like
-- Some wires
-- Any kind of box to hold everything together. **You don't need a 3D printer for this project!** It works fantastically with just a piece of cardboard or a shoebox. That being said, if you do have one, read on...
-
-### Thingiverse collection
-
-With many different 3D-printed designs being added to our [community showcase](./community.md), it felt right to gather all of them in a Thingiverse collection for you to browse. If you have access to a 3D printer, feel free to use one of the designs in your build.
-
-**[Visit our community-created design collection on Thingiverse!](https://thingiverse.com/omriharel/collections/deej)**
-
-> You can also [submit your own](https://discord.gg/nf88NJu) design to be added to the collection. Regardless, if you do upload your design to Thingiverse, _please add a `deej` tag to it so that others can find it more easily_.
-
-
-### Build procedure
-
-- Connect everything according to the [schematic](#schematic)
-- Test with a multimeter to be sure your sliders are hooked up correctly
-- Flash the Arduino chip with the sketch in [`arduino\deej-5-sliders-vanilla`](./arduino/deej-5-sliders-vanilla/deej-5-sliders-vanilla.ino)
-  - _Important:_ If you have more or less than 5 sliders, you must edit the sketch to match what you have
-- After flashing, check the serial monitor. You should see a constant stream of values separated by a pipe (`|`) character, e.g. `0|240|1023|0|483`
-  - When you move a slider, its corresponding value should move between 0 and 1023
-- Congratulations, you're now ready to run the deej executable!
-
-## How to run
-
-### Requirements
-
-#### Windows
-
-- Windows. That's it
-
-#### Linux
-
-- Install `libgtk-3-dev`, `libappindicator3-dev` and `libwebkit2gtk-4.0-dev` for system tray support. Pre-built Linux binaries aren't currently released, so you'll need to [build from source](#building-from-source). If there's demand for pre-built binaries, please [let me know](https://discord.gg/nf88NJu)!
-
-### Download and installation
-
-- Head over to the [releases page](https://github.com/omriharel/deej/releases) and download the [latest version](https://github.com/omriharel/deej/releases/latest)'s executable and configuration file (`deej.exe` and `config.yaml`)
-- Place them in the same directory anywhere on your machine
-- (Optional, on Windows) Create a shortcut to `deej.exe` and copy it to `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` to have deej run on boot
-
-### Building from source
-
-If you'd rather not download a compiled executable, or want to extend deej or modify it to your needs, feel free to clone the repository and build it yourself. All you need is a Go 1.14 (or above) environment on your machine. If you go this route, make sure to check out the [developer scripts](./pkg/deej/scripts).
-
-Like other Go packages, you can also use the `go get` tool: `go get -u github.com/omriharel/deej`. Please note that the package code now resides in the `pkg/deej` directory, and needs to be imported from there if used inside another project.
-
-If you need any help with this, please [join our Discord server](https://discord.gg/nf88NJu).
-
-## Community
-
-[![Discord](https://img.shields.io/discord/702940502038937667?logo=discord)](https://discord.gg/nf88NJu)
-
-deej is a relatively new project, but a vibrant and awesome community is rapidly growing around it. Come hang out with us in the [deej Discord server](https://discord.gg/nf88NJu), or check out a whole bunch of cool and creative builds made by our members in the [community showcase](./community.md).
-
-The server is also a great place to ask questions, suggest features or report bugs (but of course, feel free to use GitHub if you prefer).
-
-## Windows Stability Improvements (deej-winapp fork)
-
-This fork targets the **Windows desktop client stability issues** — specifically the Go app's tendency to silently lose the serial connection or fail to detect duplicate processes.
-
-### What was fixed
-
-| Issue | Root Cause | Fix |
-|---|---|---|
-| **Sliders stop working** (app still runs) | Serial read error exits the goroutine permanently — no recovery | `serial.go`: added automatic reconnection with exponential backoff (1s → 15s), health check detects stale connections (>5s idle) |
-| **Serial format too strict** | Regex required CRLF, dropped valid LF-only lines | Regex relaxed to accept both `\r\n` and `\n` |
-| **Multiple instances conflicting** | No single-instance enforcement, leftover processes block COM ports | Windows named mutex (`Global\\deej-winapp`), second instance exits immediately |
-| **Arduino 8-slider support** | Original sketch hardcoded 5 sliders; 10ms loop too fast for Windows USB-Serial | Added `arduino/deej-8-sliders/` variant (8 sliders, 50ms interval) |
-
-### Building from source (Windows)
-
-Prerequisites: [Go](https://go.dev/dl/) 1.14+, [mingw-w64](http://mingw-w64.org/) (for CGo/systray), Git.
-
-```powershell
-# Clone
-cd C:\deej
-
-# Build (PowerShell)
-powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
-
-# Or batch
-scripts\build_windows.bat
-```
-
-Output: `deej.exe` — place alongside `config.yaml` from this repo.
-
-### Arduino 8-slider version
-Flash `arduino/deej-8-sliders/deej-8-sliders.ino` to your Arduino Nano, adjusting `NUM_SLIDERS` and `analogInputs` as needed.
-
----
-
-### Donations
-
-If you love deej and want to show your support for this project, you can do so using the link below. Please don't feel obligated to donate - building the project and telling your friends about it goes a very long way! Thank you very much.
-
-[![ko-fi](https://www.ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/omriharel)
-
-### Contributing
-
-Please see [`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md).
-
 ## License
 
-deej is released under the [MIT license](./LICENSE).
+MIT — same as the [original project](https://github.com/omriharel/deej).
