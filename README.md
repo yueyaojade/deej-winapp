@@ -72,6 +72,10 @@ invert_sliders: false
 noise_reduction: default
 ```
 
+## Future planning
+
+For the YAML configuration files, we may create related visual interfaces in the future to reduce the usage barrier of the project. (The original YAML will be retained to ensure compatibility with the main branch.)
+
 ## Build from Source (manual)
 
 **Prerequisites:** Go 1.14+, mingw-w64, Git
