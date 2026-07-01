@@ -8,21 +8,28 @@ This is a **fork** of [omriharel/deej](https://github.com/omriharel/deej), focus
 
 The original Go desktop app has a recurring problem: after running for a while, the sliders stop responding while the tray icon still shows the app as running. On top of that, leftover `deej.exe` processes can pile up in the background and lock the COM port.
 
-| Fix | File | What it does |
-|---|---|---|
-| **Auto-reconnect on disconnect** | `pkg/deej/serial.go` | When the serial connection drops (USB unplug, Arduino reset, COM port glitch), the app now automatically reconnects with exponential backoff (1s → 15s). No more silent death. |
-| **Connection health monitor** | `pkg/deej/serial.go` | If no serial data arrives for 5+ seconds, the connection is proactively closed and rebuilt. |
-| **Single-instance lock** | `pkg/deej/cmd/single_instance_windows.go` | Windows named mutex prevents multiple `deej.exe` instances from running simultaneously. Second instance exits immediately. |
-| **Serial format tolerance** | `pkg/deej/serial.go` | Accepts both `CRLF` and `LF`-terminated lines (original only accepted CRLF). |
-| **8-slider Arduino sketch** | `arduino/deej-8-sliders/` | 8-channel variant with 50ms loop interval (vs original 10ms) for better Windows USB-Serial stability. |
-| **Build scripts** | `scripts/` | PowerShell and batch scripts for easy Windows compilation. |
+### Stability fixes
 
-## Build from Source
+| Fix | What it does |
+|---|---|
+| **Auto-reconnect** | Serial drops → auto reconnects with exponential backoff (1s → 15s). No more silent death. |
+| **Health monitor** | If no serial data for 5+ seconds, proactively rebuilds the connection. |
+| **Single-instance lock** | Windows named mutex prevents multiple `deej.exe` instances from piling up. |
+| **Serial format tolerance** | Accepts both `CRLF` and `LF` lines (original only took CRLF). |
 
-**Prerequisites:**
-- [Go](https://go.dev/dl/) 1.14+
-- [mingw-w64](http://mingw-w64.org/) (CGo requirement for systray)
-- Git
+### Multi slider-count support
+
+The Go client **auto-detects** how many sliders your Arduino has — just look at the pipe-delimited serial data:
+
+```
+2 sliders → "423|512"       config slider_mapping: 0, 1
+5 sliders → "423|512|0|128|900"     mapping: 0, 1, 2, 3, 4
+8 sliders → "423|512|0|128|900|..." mapping: 0, 1, … 7
+```
+
+No code changes needed. Adjust your `config.yaml` to match.
+
+## Quick Start
 
 ```powershell
 git clone https://github.com/yueyaojade/deej-winapp.git
@@ -30,35 +37,50 @@ cd deej-winapp
 scripts\build_windows.ps1
 ```
 
-Output: `deej.exe` — place alongside `config.yaml` from this repo.
+Or download the latest build from **Actions** tab → latest run → Artifacts.
+
+Place `deej.exe` and `config.yaml` in the same folder. Edit `config.yaml` with your COM port and app mappings.
 
 ## Arduino Firmware
 
-Flash `arduino/deej-8-sliders/deej-8-sliders.ino` to your Arduino Nano (or adjust pins for your board). The 5-slider original is also available at `arduino/deej-5-sliders-vanilla/`.
+One sketch, any slider count. Flash `arduino/deej/deej.ino` to your Arduino board.
 
-### Schematic
+**To change the number of sliders**, edit just two lines at the top of the sketch:
 
-A standard deej wiring setup — see the [original project](https://github.com/omriharel/deej) for detailed hardware instructions.
+```cpp
+const int NUM_SLIDERS = 8;              // ← your count
+const int analogInputs[] = {A0, A1, A2, A3, A4, A5, A6, A7};  // ← your pins
+```
+
+That's it. Supports 2 to 12 sliders out of the box.
 
 ## Configuration
 
-Place `config.yaml` next to `deej.exe`. Example for 8 sliders:
+See `config.yaml` in the repo root. Key fields:
 
 ```yaml
 slider_mapping:
-  0: master
-  1: chrome.exe
-  2: spotify.exe
-  3: discord.exe
-  4: deej.unmapped
-  5: deej.current
-  6: obs64.exe
-  7: mic
+  0: master              # system master volume
+  1: chrome.exe          # single app
+  2: deej.current        # currently active window (Win only)
+  3: deej.unmapped       # everything else
+  # ...up to however many sliders you have
 
 com_port: COM4
 baud_rate: 9600
+invert_sliders: false
 noise_reduction: default
 ```
+
+## Build from Source (manual)
+
+**Prerequisites:** Go 1.14+, mingw-w64, Git
+
+```powershell
+scripts\build_windows.ps1
+```
+
+Or use the batch script: `scripts\build_windows.bat`
 
 ## License
 

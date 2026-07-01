@@ -1,27 +1,43 @@
-# process names are case-insensitive
-# you can use 'master' to indicate the master channel, or a list of process names to create a group
-# you can use 'mic' to control your mic input level (uses the default recording device)
-# you can use 'deej.unmapped' to control all apps that aren't bound to any slider (this ignores master, system, mic and device-targeting sessions)
-# windows only - you can use 'deej.current' to control the currently active app (whether full-screen or not)
-# windows only - you can use a device's full name, i.e. "Speakers (Realtek High Definition Audio)", to bind it. this works for both output and input devices
-# windows only - you can use 'system' to control the "system sounds" volume
-# important: slider indexes start at 0, regardless of which analog pins you're using!
+# deej configuration
+# Place this file next to deej.exe
+
+# ─── Slider mapping ───────────────────────────────────────────────────
+# Map each physical slider (0, 1, 2, ...) to the app(s) it controls.
+# The number of sliders here should match your Arduino's NUM_SLIDERS.
+#
+# Special targets:
+#   master          — system master volume
+#   mic             — microphone input level
+#   system          — Windows system sounds
+#   deej.current    — currently active window (Windows only)
+#   deej.unmapped   — all apps not assigned to any slider
+#
+# Groups: list multiple apps to control them with one slider:
+#   3:
+#     - chrome.exe
+#     - firefox.exe
+#
+# Process names are case-insensitive.
+
 slider_mapping:
   0: master
   1: chrome.exe
   2: spotify.exe
-  3:
-    - pathofexile_x64.exe
-    - rocketleague.exe
-  4: discord.exe
+  3: discord.exe
+  4: deej.unmapped
+  5: deej.current
+  6: obs64.exe
+  7: mic
 
-# set this to true if you want the controls inverted (i.e. top is 0%, bottom is 100%)
-invert_sliders: false
+# ─── Serial connection ────────────────────────────────────────────────
+# Find your COM port in Windows Device Manager under "Ports (COM & LPT)"
 
-# settings for connecting to the arduino board
 com_port: COM4
 baud_rate: 9600
 
-# adjust the amount of signal noise reduction depending on your hardware quality
-# supported values are "low" (excellent hardware), "default" (regular hardware) or "high" (bad, noisy hardware)
+# ─── Slider behavior ──────────────────────────────────────────────────
+# Set to true if moving a slider up lowers the volume
+invert_sliders: false
+
+# Noise reduction: "low" (clean hardware), "default", or "high" (noisy)
 noise_reduction: default
