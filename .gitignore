@@ -12,3 +12,10 @@ releases/
 *.bin
 logs/
 preferences.yaml
+*.syso
+.DS_Store
+# Build outputs
+/cmd
+/deej
+/deej.exe
+/releases/

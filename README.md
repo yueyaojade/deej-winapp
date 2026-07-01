@@ -197,6 +197,41 @@ deej is a relatively new project, but a vibrant and awesome community is rapidly
 
 The server is also a great place to ask questions, suggest features or report bugs (but of course, feel free to use GitHub if you prefer).
 
+## Windows Stability Improvements (deej-winapp fork)
+
+This fork targets the **Windows desktop client stability issues** — specifically the Go app's tendency to silently lose the serial connection or fail to detect duplicate processes.
+
+### What was fixed
+
+| Issue | Root Cause | Fix |
+|---|---|---|
+| **Sliders stop working** (app still runs) | Serial read error exits the goroutine permanently — no recovery | `serial.go`: added automatic reconnection with exponential backoff (1s → 15s), health check detects stale connections (>5s idle) |
+| **Serial format too strict** | Regex required CRLF, dropped valid LF-only lines | Regex relaxed to accept both `\r\n` and `\n` |
+| **Multiple instances conflicting** | No single-instance enforcement, leftover processes block COM ports | Windows named mutex (`Global\\deej-winapp`), second instance exits immediately |
+| **Arduino 8-slider support** | Original sketch hardcoded 5 sliders; 10ms loop too fast for Windows USB-Serial | Added `arduino/deej-8-sliders/` variant (8 sliders, 50ms interval) |
+
+### Building from source (Windows)
+
+Prerequisites: [Go](https://go.dev/dl/) 1.14+, [mingw-w64](http://mingw-w64.org/) (for CGo/systray), Git.
+
+```powershell
+# Clone
+cd C:\deej
+
+# Build (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+
+# Or batch
+scripts\build_windows.bat
+```
+
+Output: `deej.exe` — place alongside `config.yaml` from this repo.
+
+### Arduino 8-slider version
+Flash `arduino/deej-8-sliders/deej-8-sliders.ino` to your Arduino Nano, adjusting `NUM_SLIDERS` and `analogInputs` as needed.
+
+---
+
 ### Donations
 
 If you love deej and want to show your support for this project, you can do so using the link below. Please don't feel obligated to donate - building the project and telling your friends about it goes a very long way! Thank you very much.

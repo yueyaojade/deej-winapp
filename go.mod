@@ -1,4 +1,4 @@
-module github.com/omriharel/deej
+module github.com/yueyaojade/deej-winapp
 
 go 1.14
 

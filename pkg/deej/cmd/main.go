@@ -3,8 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 
-	"github.com/omriharel/deej/pkg/deej"
+	"github.com/yueyaojade/deej-winapp/pkg/deej"
 )
 
 var (
@@ -22,6 +23,12 @@ func init() {
 }
 
 func main() {
+
+	// enforce single instance at OS level (prevent COM port conflicts from multiple deej processes)
+	if !ensureSingleInstance() {
+		fmt.Fprintln(os.Stderr, "Another instance of deej is already running.")
+		os.Exit(1)
+	}
 
 	// first we need a logger
 	logger, err := deej.NewLogger(buildType)

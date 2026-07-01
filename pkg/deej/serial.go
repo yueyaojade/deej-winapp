@@ -13,7 +13,16 @@ import (
 	"github.com/jacobsa/go-serial/serial"
 	"go.uber.org/zap"
 
-	"github.com/omriharel/deej/pkg/deej/util"
+	"github.com/yueyaojade/deej-winapp/pkg/deej/util"
+)
+
+const (
+	// How long without receiving any data before forcing a reconnection
+	connectionStaleTimeout = 5 * time.Second
+
+	// Reconnect backoff parameters
+	reconnectBaseDelay = 1 * time.Second
+	reconnectMaxDelay  = 15 * time.Second
 )
 
 // SerialIO provides a deej-aware abstraction layer to managing serial I/O
@@ -29,10 +38,14 @@ type SerialIO struct {
 	connOptions serial.OpenOptions
 	conn        io.ReadWriteCloser
 
+	lastDataTime               time.Time
 	lastKnownNumSliders        int
 	currentSliderPercentValues []float32
 
 	sliderMoveConsumers []chan SliderMoveEvent
+
+	// protects conn and connected from concurrent access
+	closeLock chan struct{}
 }
 
 // SliderMoveEvent represents a single slider move captured by deej
@@ -41,7 +54,7 @@ type SliderMoveEvent struct {
 	PercentValue float32
 }
 
-var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*\r\n$`)
+var expectedLinePattern = regexp.MustCompile(`^(\d{1,4})(\|(\d{1,4}))*\r?\n$`)
 
 // NewSerialIO creates a SerialIO instance that uses the provided deej
 // instance's connection info to establish communications with the arduino chip
@@ -55,6 +68,8 @@ func NewSerialIO(deej *Deej, logger *zap.SugaredLogger) (*SerialIO, error) {
 		connected:           false,
 		conn:                nil,
 		sliderMoveConsumers: []chan SliderMoveEvent{},
+		lastDataTime:        time.Now(),
+		closeLock:           make(chan struct{}, 1),
 	}
 
 	logger.Debug("Created serial i/o instance")
@@ -90,39 +105,13 @@ func (sio *SerialIO) Start() error {
 		MinimumReadSize: uint(minimumReadSize),
 	}
 
-	sio.logger.Debugw("Attempting serial connection",
-		"comPort", sio.connOptions.PortName,
-		"baudRate", sio.connOptions.BaudRate,
-		"minReadSize", minimumReadSize)
-
-	var err error
-	sio.conn, err = serial.Open(sio.connOptions)
-	if err != nil {
-
-		// might need a user notification here, TBD
+	if err := sio.doOpen(); err != nil {
 		sio.logger.Warnw("Failed to open serial connection", "error", err)
 		return fmt.Errorf("open serial connection: %w", err)
 	}
 
-	namedLogger := sio.logger.Named(strings.ToLower(sio.connOptions.PortName))
-
-	namedLogger.Infow("Connected", "conn", sio.conn)
-	sio.connected = true
-
-	// read lines or await a stop
-	go func() {
-		connReader := bufio.NewReader(sio.conn)
-		lineChannel := sio.readLine(namedLogger, connReader)
-
-		for {
-			select {
-			case <-sio.stopChannel:
-				sio.close(namedLogger)
-			case line := <-lineChannel:
-				sio.handleLine(namedLogger, line)
-			}
-		}
-	}()
+	// start the read+reconnect loop
+	go sio.readLoop()
 
 	return nil
 }
@@ -144,6 +133,166 @@ func (sio *SerialIO) SubscribeToSliderMoveEvents() chan SliderMoveEvent {
 	sio.sliderMoveConsumers = append(sio.sliderMoveConsumers, ch)
 
 	return ch
+}
+
+// doOpen opens the serial port with the configured options
+func (sio *SerialIO) doOpen() error {
+	conn, err := serial.Open(sio.connOptions)
+	if err != nil {
+		return err
+	}
+
+	sio.conn = conn
+	sio.connected = true
+	sio.lastDataTime = time.Now()
+
+	namedLogger := sio.logger.Named(strings.ToLower(sio.connOptions.PortName))
+	namedLogger.Infow("Connected")
+
+	return nil
+}
+
+// readLoop reads slider values from the serial connection and handles
+// reconnection when the connection drops or goes stale
+func (sio *SerialIO) readLoop() {
+	namedLogger := sio.logger.Named(strings.ToLower(sio.connOptions.PortName))
+
+	// channel for read errors (signals reconnect needed)
+	readError := make(chan struct{}, 1)
+
+	// start the line reader goroutine
+	lineCh := make(chan string, 1)
+	go sio.readLines(namedLogger, lineCh, readError)
+
+	// health ticker: checks if we've received data recently
+	healthTicker := time.NewTicker(connectionStaleTimeout)
+	defer healthTicker.Stop()
+
+	for {
+		select {
+		case <-sio.stopChannel:
+			sio.close(namedLogger)
+			return
+
+		case line, ok := <-lineCh:
+			if !ok {
+				// line channel closed = permanent read failure
+				namedLogger.Warn("Serial read terminated, entering reconnect loop")
+				sio.close(namedLogger)
+				sio.reconnectLoop(namedLogger)
+				return
+			}
+
+			sio.lastDataTime = time.Now()
+			sio.handleLine(namedLogger, line)
+
+		case <-healthTicker.C:
+			if sio.connected && time.Since(sio.lastDataTime) > connectionStaleTimeout {
+				namedLogger.Warnw("No serial data received for a while, forcing reconnection",
+					"idleSeconds", time.Since(sio.lastDataTime).Seconds())
+				// close the connection to unblock the reader goroutine
+				sio.close(namedLogger)
+			}
+
+		case <-readError:
+			// reader goroutine reported an error, close and reconnect
+			namedLogger.Warn("Read error detected, entering reconnect loop")
+			sio.close(namedLogger)
+			sio.reconnectLoop(namedLogger)
+			return
+		}
+	}
+}
+
+// readLines reads serial data and delivers lines to the provided channel.
+// If a permanent read error occurs, it closes lineCh and sends on readError.
+func (sio *SerialIO) readLines(logger *zap.SugaredLogger, lineCh chan string, readError chan struct{}) {
+	reader := bufio.NewReader(sio.conn)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			logger.Warnw("Failed to read line from serial", "error", err, "partialLine", line)
+			close(lineCh)
+			select {
+			case readError <- struct{}{}:
+			default:
+			}
+			return
+		}
+
+		if sio.deej.Verbose() {
+			logger.Debugw("Read new line", "line", line)
+		}
+
+		// Deliver line; if the main loop has already exited, just return
+		select {
+		case lineCh <- line:
+		default:
+			logger.Debug("readLines: lineCh full, reader may be shutting down")
+			return
+		}
+	}
+}
+
+// reconnectLoop keeps trying to reconnect with exponential backoff
+// until successful or stopped via stopChannel
+func (sio *SerialIO) reconnectLoop(logger *zap.SugaredLogger) {
+	delay := reconnectBaseDelay
+
+	for attempt := 1; ; attempt++ {
+		// check if we should stop
+		select {
+		case <-sio.stopChannel:
+			logger.Debug("Stopped during reconnect attempt")
+			return
+		default:
+		}
+
+		if sio.connected {
+			logger.Debug("Already reconnected, stopping reconnect loop")
+			return
+		}
+
+		logger.Infow("Attempting serial reconnection", "attempt", attempt, "nextRetry", delay)
+
+		if err := sio.doOpen(); err != nil {
+			logger.Warnw("Reconnect attempt failed", "error", err, "retryingIn", delay)
+			time.Sleep(delay)
+			delay *= 2
+			if delay > reconnectMaxDelay {
+				delay = reconnectMaxDelay
+			}
+			continue
+		}
+
+		logger.Infow("Successfully reconnected", "attempts", attempt)
+		// Start reading on the new connection
+		sio.readLoop()
+		return
+	}
+}
+
+// close closes the serial connection if open. Safe to call multiple times.
+func (sio *SerialIO) close(logger *zap.SugaredLogger) {
+	// Ensure only one goroutine closes at a time
+	select {
+	case sio.closeLock <- struct{}{}:
+	default:
+		return // another goroutine is already closing
+	}
+	defer func() { <-sio.closeLock }()
+
+	if sio.conn != nil {
+		if err := sio.conn.Close(); err != nil {
+			logger.Warnw("Failed to close serial connection", "error", err)
+		} else {
+			logger.Debug("Serial connection closed")
+		}
+	}
+
+	sio.conn = nil
+	sio.connected = false
 }
 
 func (sio *SerialIO) setupOnConfigReload() {
@@ -187,45 +336,6 @@ func (sio *SerialIO) setupOnConfigReload() {
 	}()
 }
 
-func (sio *SerialIO) close(logger *zap.SugaredLogger) {
-	if err := sio.conn.Close(); err != nil {
-		logger.Warnw("Failed to close serial connection", "error", err)
-	} else {
-		logger.Debug("Serial connection closed")
-	}
-
-	sio.conn = nil
-	sio.connected = false
-}
-
-func (sio *SerialIO) readLine(logger *zap.SugaredLogger, reader *bufio.Reader) chan string {
-	ch := make(chan string)
-
-	go func() {
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-
-				if sio.deej.Verbose() {
-					logger.Warnw("Failed to read line from serial", "error", err, "line", line)
-				}
-
-				// just ignore the line, the read loop will stop after this
-				return
-			}
-
-			if sio.deej.Verbose() {
-				logger.Debugw("Read new line", "line", line)
-			}
-
-			// deliver the line to the channel
-			ch <- line
-		}
-	}()
-
-	return ch
-}
-
 func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 
 	// this function receives an unsanitized line which is guaranteed to end with LF,
@@ -235,8 +345,8 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		return
 	}
 
-	// trim the suffix
-	line = strings.TrimSuffix(line, "\r\n")
+	// trim the suffix (accept both CRLF and LF)
+	line = strings.TrimRight(line, "\r\n")
 
 	// split on pipe (|), this gives a slice of numerical strings between "0" and "1023"
 	splitLine := strings.Split(line, "|")
