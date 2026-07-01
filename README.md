@@ -85,3 +85,7 @@ Or use the batch script: `scripts\build_windows.bat`
 ## License
 
 MIT — same as the [original project](https://github.com/omriharel/deej).
+
+## Note
+
+This project involves the participation of AI in the code writing process.
