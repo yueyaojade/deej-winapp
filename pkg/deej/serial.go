@@ -161,7 +161,9 @@ func (sio *SerialIO) readLoop() {
 	readError := make(chan struct{}, 1)
 
 	// start the line reader goroutine
-	lineCh := make(chan string, 1)
+	// buffer size tuned for 100Hz Arduino loop — handles transient
+	// Windows audio-API latency spikes without dropping lines
+	lineCh := make(chan string, 16)
 	go sio.readLines(namedLogger, lineCh, readError)
 
 	// health ticker: checks if we've received data recently
@@ -229,8 +231,10 @@ func (sio *SerialIO) readLines(logger *zap.SugaredLogger, lineCh chan string, re
 		select {
 		case lineCh <- line:
 		default:
-			logger.Debug("readLines: lineCh full, reader may be shutting down")
-			return
+			// buffer full — drop this line but keep reading.
+			// losing one sample frame is harmless; killing the reader
+			// would trigger a false reconnection cycle.
+			logger.Debug("readLines: dropped single line (buffer full)")
 		}
 	}
 }
