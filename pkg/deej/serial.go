@@ -89,13 +89,12 @@ func (sio *SerialIO) Start() error {
 		return errors.New("serial: connection already active")
 	}
 
-	// set minimum read size according to platform (0 for windows, 1 for linux)
-	// this prevents a rare bug on windows where serial reads get congested,
-	// resulting in significant lag
-	minimumReadSize := 0
-	if util.Linux() {
-		minimumReadSize = 1
-	}
+	// minimum read size: 1 on all platforms.
+	// Windows MinimumReadSize=0 causes ReadFile to return 0 bytes before
+	// any Arduino data arrives, which go-serial treats as a fatal error
+	// ("multiple Read calls return no data or error"), triggering an
+	// immediate reconnect loop that fills the log file.
+	minimumReadSize := 1
 
 	sio.connOptions = serial.OpenOptions{
 		PortName:        sio.deej.config.ConnectionInfo.COMPort,
@@ -273,7 +272,16 @@ func (sio *SerialIO) reconnectLoop(logger *zap.SugaredLogger) {
 		logger.Infow("Successfully reconnected", "attempts", attempt)
 		// Start reading on the new connection
 		sio.readLoop()
-		return
+
+		// readLoop exited — connection was lost again.
+		// Apply backoff before the next attempt to prevent
+		// tight reconnect loops when the serial device accepts
+		// opens but delivers no data (e.g. wrong COM port).
+		time.Sleep(delay)
+		delay *= 2
+		if delay > reconnectMaxDelay {
+			delay = reconnectMaxDelay
+		}
 	}
 }
 
