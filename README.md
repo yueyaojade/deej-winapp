@@ -93,3 +93,7 @@ MIT — same as the [original project](https://github.com/omriharel/deej).
 ## Note
 
 This project involves the participation of AI in the code writing process.
+
+## The END
+
+It works!!!!!!!!!!!!!!!!!! No bug! No crash!
