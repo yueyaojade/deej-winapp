@@ -13,17 +13,23 @@ func ensureSingleInstance() bool {
 	}
 
 	handle, err := windows.CreateMutex(nil, false, name)
-	if err != nil {
-		if err == windows.ERROR_ALREADY_EXISTS {
-			if handle != 0 {
-				windows.CloseHandle(handle)
-			}
-			return false
-		}
+	if err != nil && err != windows.ERROR_ALREADY_EXISTS {
 		return true // unknown error, let it run
 	}
 
-	// Mutex created successfully (first instance).
-	// Handle stays open — Windows auto-releases it when the process exits.
+	// CreateMutex returns a valid handle to the *existing* mutex when it
+	// already exists. Older x/sys/windows wrappers only set err when
+	// handle == 0, so the err check above can miss the already-exists case.
+	// GetLastError reliably reports ERROR_ALREADY_EXISTS (183) in that case.
+	alreadyExists := err == windows.ERROR_ALREADY_EXISTS ||
+		windows.GetLastError() == uint32(windows.ERROR_ALREADY_EXISTS)
+
+	if alreadyExists {
+		windows.CloseHandle(handle)
+		return false
+	}
+
+	// First instance: keep the handle open for the process lifetime.
+	// (Intentional — the OS closes it on process exit.)
 	return true
 }
